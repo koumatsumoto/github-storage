@@ -2,7 +2,10 @@ import { GitHubStorage } from "./GitHubStorage";
 import { expect, test, describe } from "vitest";
 
 describe("GitHubStorage", () => {
-  const storage = new GitHubStorage({ token: process.env.GITHUB_TOKEN ?? "", repository: "github-storage-test" });
+  const storage = new GitHubStorage({
+    token: process.env.GITHUB_TOKEN ?? "",
+    repository: "koumatsumoto/github-storage-test",
+  });
 
   test("userinfo", async () => {
     const data = await storage.userinfo();
@@ -20,12 +23,6 @@ describe("GitHubStorage", () => {
     expect(data).toStrictEqual({
       lastCommitId: expect.any(String),
     });
-  });
-
-  test("load", async () => {
-    const data = await storage.load({ count: 1 });
-
-    expect(data).toHaveLength(1);
   });
 
   test("loadFile", async () => {

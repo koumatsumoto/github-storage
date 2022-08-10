@@ -1,48 +1,52 @@
-import { filter, isDefined, map, pipe, take } from "remeda";
+import { map, pipe, take } from "remeda";
 import { GitHubClient } from "./GitHubClient";
 import { FileIndex } from "./types";
-import {
-  makeCommitMessage,
-  createFileData,
-  getFilePath,
-  parseCommitMessage,
-  toBase64,
-  parseFileData,
-  FileData,
-} from "./utils";
+import { createFileData, getFilePath, makeCommitMessage, parseCommitMessage, parseFileData, toBase64 } from "./utils";
 
 // @see https://docs.github.com/en/graphql/overview/resource-limitations
 const MAX_NODE_COUNT = 100;
 
 export class GitHubStorage {
   readonly #client: GitHubClient;
+  readonly #owner: string;
   readonly #repository: string;
+  #defaultBranch?: string;
 
   constructor({ token, repository }: { token: string; repository: string }) {
     this.#client = new GitHubClient({ token });
-    this.#repository = repository;
+    const [owner, repo] = repository.split("/");
+    if (!owner || !repo) {
+      throw new Error("Invalid repository name");
+    }
+    this.#owner = owner;
+    this.#repository = repo;
   }
 
   async userinfo() {
     return this.#client.getViewer();
   }
 
-  async defaultBranch() {
-    const { username } = await this.#client.getViewer();
+  async defaultBranch(): Promise<string> {
+    if (this.#defaultBranch) {
+      return this.#defaultBranch;
+    }
 
-    return this.#client.getRepositoryDefaultBranch({ owner: username, name: this.#repository });
+    return (
+      this.#defaultBranch = await this.#client.getRepositoryDefaultBranch({
+        owner: this.#owner,
+        name: this.#repository,
+      })
+    );
   }
 
   async findIndices({ count }: { count: number }): Promise<FileIndex[]> {
-    const { username } = await this.#client.getViewer();
-
     const results: string[] = [];
     let endCursor: string | undefined = undefined;
     let hasNextPage = true;
     while (hasNextPage && results.length < count) {
       const result: Awaited<ReturnType<GitHubClient["getRepositoryCommits"]>> = await this.#client.getRepositoryCommits(
         {
-          owner: username,
+          owner: this.#owner,
           name: this.#repository,
           count: Math.min(MAX_NODE_COUNT, count),
           after: endCursor,
@@ -58,12 +62,11 @@ export class GitHubStorage {
   }
 
   async loadFile(id: number) {
-    const { username } = await this.#client.getViewer();
     const filepath = getFilePath(id);
     const defaultBranchName = await this.defaultBranch();
 
     const file = await this.#client.getRepositoryFile({
-      owner: username,
+      owner: this.#owner,
       name: this.#repository,
       expression: `${defaultBranchName}:${filepath}`,
     });
@@ -81,42 +84,6 @@ export class GitHubStorage {
     }
   }
 
-  async load({ count }: { count: number }): Promise<FileData[]> {
-    const { username } = await this.#client.getViewer();
-    const { defaultBranchName, commits } = await this.#client.getRepositoryCommits({
-      owner: username,
-      name: this.#repository,
-      count,
-    });
-
-    const records = await Promise.all(
-      commits.map(async ({ message }) => {
-        const { time } = parseCommitMessage(message);
-        const filepath = getFilePath(time);
-
-        const file = await this.#client.getRepositoryFile({
-          owner: username,
-          name: this.#repository,
-          expression: `${defaultBranchName}:${filepath}`,
-        });
-
-        if (!file) {
-          console.error(`[github-storage] file not found: ${filepath}`);
-          return undefined;
-        }
-
-        try {
-          return parseFileData(file.text);
-        } catch {
-          console.error(`[github-storage] data is not json schema: ${file.text}`);
-          return undefined;
-        }
-      }),
-    );
-
-    return filter(records, isDefined);
-  }
-
   async save(
     { title = "", text = "", tags = [], time = new Date() }: {
       title?: string;
@@ -125,9 +92,8 @@ export class GitHubStorage {
       time?: Date;
     },
   ) {
-    const { username } = await this.#client.getViewer();
     const { defaultBranchName, lastCommitId } = await this.#client.getRepositoryCommits({
-      owner: username,
+      owner: this.#owner,
       name: this.#repository,
       count: 1,
     });
@@ -139,7 +105,7 @@ export class GitHubStorage {
     return await this.#client.createCommit({
       input: {
         branch: {
-          repositoryNameWithOwner: `${username}/${this.#repository}`,
+          repositoryNameWithOwner: `${this.#owner}/${this.#repository}`,
           branchName: defaultBranchName,
         },
         expectedHeadOid: lastCommitId,
